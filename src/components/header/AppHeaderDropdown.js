@@ -1,4 +1,5 @@
 import React from 'react'
+import {useNavigate} from "react-router-dom";
 import {
   CAvatar,
   CBadge,
@@ -23,8 +24,20 @@ import {
 import CIcon from '@coreui/icons-react'
 
 import avatar8 from './../../assets/images/avatars/8.jpg'
+import {useAuth} from "../../contexts/AuthContext";
 
 const AppHeaderDropdown = () => {
+  const navigate = useNavigate()
+  const {logout} = useAuth()
+  const handleLogout = async (e) =>{
+    e.preventDefault()
+    try{
+      await logout()
+      navigate('/login')
+    }catch (e) {
+      console.log(e)
+    }
+  }
   return (
     <CDropdown variant="nav-item">
       <CDropdownToggle placement="bottom-end" className="py-0" caret={false}>
@@ -84,9 +97,9 @@ const AppHeaderDropdown = () => {
           </CBadge>
         </CDropdownItem>
         <CDropdownDivider />
-        <CDropdownItem href="#">
+        <CDropdownItem onClick={(event) => handleLogout(event)} href="#">
           <CIcon icon={cilLockLocked} className="me-2" />
-          Lock Account
+          Logout
         </CDropdownItem>
       </CDropdownMenu>
     </CDropdown>

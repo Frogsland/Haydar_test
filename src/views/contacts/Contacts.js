@@ -1,103 +1,149 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState } from "react";
 import {
   doc,
   collection,
-  addDoc,
-  Timestamp,
   query,
-  orderBy,
   onSnapshot,
   updateDoc,
-  deleteDoc,
-} from 'firebase/firestore'
+  getDoc,
+  getDocs,
+  runTransaction,
+} from "firebase/firestore";
 
-import { firestoreDB } from '../../firebase'
-import {
-  CButton,
-  CCard,
-  CCardBody,
-  CCardHeader,
-  CCol,
-  CRow,
-  CTable,
-  CTableBody,
-  CTableDataCell,
-  CTableHead,
-  CTableHeaderCell,
-  CTableRow,
-} from '@coreui/react'
-import CIcon from '@coreui/icons-react'
-import { cilPencil, cilTrash } from '@coreui/icons/js/free'
+import { firestoreDB } from "../../firebase";
+import { CButton, CCol, CRow } from "@coreui/react";
 
-import AddNewContactModal from './AddNewContactModal'
-import UpdateContactModal from './UpdateContactModal'
-import DeleteConfirmationModal from './DeleteConfirmationModal'
+import AddNewContactModal from "./modals/AddNewContactModal";
+import UpdateContactModal from "./modals/UpdateContactModal";
+import DeleteConfirmationModal from "./modals/DeleteConfirmationModal";
+import { useAuth } from "../../contexts/AuthContext";
+import ContactsTable from "./components/ContactsTable";
+import NoContacts from "./components/NoContacts";
+import { GlobalContactsModal } from "./modals/GlobalContactsModal";
+import { removeDuplicates } from "../../helpers/removeDuplicates";
 
 const Contacts = () => {
-  const [addContactVisibility, setAddContactVisibility] = useState(false)
-  const [editContactVisibility, setEditContactVisibility] = useState(false)
-  const [deleteConfirmationVisibility, setDeleteConfirmationVisibility] = useState(false)
-  const [deleteItemId, setDeleteItemId] = useState('')
-  const [contactsList, setContactsList] = useState([])
-  const [selectedContact, setSelectedContact] = useState({})
+  const [addContactVisibility, setAddContactVisibility] = useState(false);
+  const [editContactVisibility, setEditContactVisibility] = useState(false);
+  const [globalContactsVisibility, setGlobalContactsVisibility] = useState(
+    false
+  );
+  const [loaded, setLoaded] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [globalContactsCount, setGlobalContactsCount] = useState(0);
+  const [
+    deleteConfirmationVisibility,
+    setDeleteConfirmationVisibility,
+  ] = useState(false);
+  const [deleteItemId, setDeleteItemId] = useState("");
+  const [contactsList, setContactsList] = useState([]);
+  const [addRemoveGlobal, setAddRemoveGlobal] = useState(false);
+  const [selectedContact, setSelectedContact] = useState({});
+
+  const { currentUser } = useAuth();
+  const usersRef = doc(firestoreDB, "users", currentUser.uid);
 
   useEffect(() => {
-    const q = query(collection(firestoreDB, 'contacts'), orderBy('created', 'desc'))
-    onSnapshot(q, (querySnapshot) => {
-      setContactsList(
-        querySnapshot.docs.map((doc) => ({
-          id: doc.id,
-          data: doc.data(),
-        })),
-      )
-    })
-  }, [])
+    onSnapshot(usersRef, { includeMetadataChanges: true }, (doc) => {
+      setContactsList((prevState) => {
+        const temp = [...prevState, ...doc.data().contacts];
+        return removeDuplicates(temp);
+      });
+    });
+  }, []);
 
   const editContactHandler = (contact) => {
-    setSelectedContact(contact)
-    setEditContactVisibility(!editContactVisibility)
-  }
+    setSelectedContact(contact);
+    setEditContactVisibility(!editContactVisibility);
+  };
+
   const handleDeletedItem = (id) => {
-    setDeleteItemId(id)
-    setDeleteConfirmationVisibility(true)
-  }
+    setDeleteItemId(id);
+    setDeleteConfirmationVisibility(true);
+  };
 
   const postNewContact = async (data) => {
     try {
-      await addDoc(collection(firestoreDB, 'contacts'), {
-        ...data,
-        created: Timestamp.now(),
-      })
-      setAddContactVisibility(false)
+      getDoc(usersRef).then(async (res) => {
+        const temp = res
+          .data()
+          .contacts.filter((contact) => contact.id !== data.id);
+        temp.push(data);
+        await updateDoc(usersRef, {
+          contacts: temp,
+        });
+      });
+
+      setAddContactVisibility(false);
     } catch (err) {
-      alert(err)
+      alert(err);
     }
-  }
+  };
 
   const deleteContact = async (id) => {
-    const taskDocRef = doc(firestoreDB, 'contacts', id)
     try {
-      await deleteDoc(taskDocRef)
-      setDeleteConfirmationVisibility(false)
+      let temp = [];
+      getDoc(usersRef).then(async (res) => {
+        temp = res.data().contacts.filter((contact) => contact.id !== id);
+        await updateDoc(usersRef, {
+          contacts: temp,
+        });
+      });
+      setContactsList((prevState) => {
+        const filter = [...prevState, ...temp].filter(
+          (contact) => contact.id !== id
+        );
+        return removeDuplicates(filter);
+      });
+      setDeleteConfirmationVisibility(false);
     } catch (err) {
-      alert(err)
+      alert(err);
     }
-  }
+  };
 
   const updateContact = async (data, id) => {
-    const contactDocRef = doc(firestoreDB, 'contacts', id)
     try {
-      await updateDoc(contactDocRef, {
-        ...data,
-      })
-      setEditContactVisibility(false)
+      getDoc(usersRef).then(async (res) => {
+        const temp = res.data().contacts.map((contact) => {
+          if (contact.id === id) {
+            return {
+              ...data,
+              id,
+            };
+          }
+          return contact;
+        });
+        await updateDoc(usersRef, {
+          contacts: temp,
+        });
+      });
+      setEditContactVisibility(false);
     } catch (err) {
-      alert(err)
+      alert(err);
     }
-  }
-
+  };
+  const loadGlobalContacts = async () => {
+    const q = query(collection(firestoreDB, "contacts"));
+    setPending(true);
+    const querySnapshot = await getDocs(q);
+    let temp = [];
+    for (const item of querySnapshot.docs) {
+      await runTransaction(firestoreDB, async (transaction) => {
+        const sfDoc = await transaction.get(usersRef);
+        temp = sfDoc
+          .data()
+          .contacts.filter((contact) => contact.id !== item.id);
+        temp.push(item.data());
+        transaction.update(usersRef, { contacts: temp });
+        setGlobalContactsCount((prevState) => Number(prevState) + 1);
+      });
+    }
+    setPending(false);
+    setLoaded(true);
+    setAddRemoveGlobal(!addRemoveGlobal);
+  };
   return (
-    <>
+    <CRow className="bg-white p-4 rounded">
       <AddNewContactModal
         visible={addContactVisibility}
         setVisible={setAddContactVisibility}
@@ -115,79 +161,63 @@ const Contacts = () => {
         deleteContact={deleteContact}
         itemToDelete={deleteItemId}
       />
+      <GlobalContactsModal
+        setVisible={setGlobalContactsVisibility}
+        visible={globalContactsVisibility}
+        loadData={loadGlobalContacts}
+        contactsCount={globalContactsCount}
+        pending={pending}
+        loaded={loaded}
+        setContactsCount={setGlobalContactsCount}
+      />
       <CRow>
         <CCol xs>
           <CRow className="mb-3 justify-content-end">
+            <CCol className="justify-content-start d-flex" xs={7}>
+              <h2 className="mb-0">Contacts List</h2>
+            </CCol>
+            <CCol className="justify-content-end d-flex" xs={3}>
+              <CButton
+                color="primary"
+                className="text-white"
+                style={{ width: "100%" }}
+                onClick={() => {
+                  setLoaded(false);
+                  setGlobalContactsVisibility(!globalContactsVisibility);
+                }}
+              >
+                Load global contacts
+              </CButton>
+            </CCol>
             <CCol className="justify-content-end d-flex" xs={2}>
               <CButton
                 color="success"
                 className="text-white"
+                style={{ width: "100%" }}
                 onClick={() => setAddContactVisibility(!addContactVisibility)}
               >
-                Add new
+                Add new contact
               </CButton>
             </CCol>
           </CRow>
-          <CCard className="mb-4">
-            <CCardHeader>Contacts list</CCardHeader>
-            <CCardBody>
-              <CTable align="middle" className="mb-0 border" hover responsive>
-                <CTableHead color="light">
-                  <CTableRow>
-                    <CTableHeaderCell>First name</CTableHeaderCell>
-                    <CTableHeaderCell>Last name</CTableHeaderCell>
-                    <CTableHeaderCell>Address</CTableHeaderCell>
-                    <CTableHeaderCell>Email</CTableHeaderCell>
-                    <CTableHeaderCell>Phone number</CTableHeaderCell>
-                    <CTableHeaderCell className="text-center">Actions</CTableHeaderCell>
-                  </CTableRow>
-                </CTableHead>
-                <CTableBody>
-                  {contactsList?.map((item) => (
-                    <CTableRow v-for="item in tableItems" key={item.id}>
-                      <CTableDataCell>
-                        <div>{item.data.firstName}</div>
-                      </CTableDataCell>
-                      <CTableDataCell>
-                        <div>{item.data.lastName}</div>
-                      </CTableDataCell>
-                      <CTableDataCell>
-                        <div>{item.data.address}</div>
-                      </CTableDataCell>
-                      <CTableDataCell>
-                        <div>{item.data.email}</div>
-                      </CTableDataCell>
-                      <CTableDataCell>
-                        <div>{item.data.phone}</div>
-                      </CTableDataCell>
-                      <CTableDataCell className="text-center">
-                        <CRow className="mx-0 justify-content-center">
-                          <CCol xs={4}>
-                            <CButton
-                              onClick={() => editContactHandler(item)}
-                              className="mr-3"
-                              color="primary"
-                            >
-                              <CIcon icon={cilPencil} size="lg" />
-                            </CButton>
-                          </CCol>
-                          <CCol xs={4}>
-                            <CButton color="danger" onClick={() => handleDeletedItem(item.id)}>
-                              <CIcon icon={cilTrash} size="lg" fill="white" />
-                            </CButton>
-                          </CCol>
-                        </CRow>
-                      </CTableDataCell>
-                    </CTableRow>
-                  ))}
-                </CTableBody>
-              </CTable>
-            </CCardBody>
-          </CCard>
+          <CRow className="w-100 m-0">
+            {contactsList.length ? (
+              <ContactsTable
+                contacts={contactsList}
+                editContactHandler={editContactHandler}
+                handleDeletedItem={handleDeletedItem}
+              />
+            ) : (
+              <NoContacts
+                createContactModal={addContactVisibility}
+                setCreateContactModal={setAddContactVisibility}
+              />
+            )}
+          </CRow>
         </CCol>
       </CRow>
-    </>
-  )
-}
+    </CRow>
+  );
+};
 
-export default Contacts
+export default Contacts;
